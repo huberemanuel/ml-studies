@@ -1,2 +1,4 @@
-# ml-studies
-Studies of machine learning concepts
+# Aprendizado de máquina
+
+
+Repositírio com estudos de algoritmos de aprendizado e máquina.
