@@ -1,13 +1,15 @@
 import torch
+import pdb
+import pandas as pd
 import tqdm
 import numpy as np
 from torch import nn
 from torch.nn.utils import parameters_to_vector
 from torch.utils.tensorboard import SummaryWriter
 from torch.utils.data import DataLoader, Dataset
-from sklearn.datasets import load_diabetes
 from sklearn.model_selection import train_test_split
-from sklearn.metrics import mean_squared_error
+from sklearn.metrics import accuracy_score
+from sklearn.preprocessing import StandardScaler
 
 
 class MyDataset(Dataset):
@@ -35,8 +37,7 @@ class MyNN(nn.Module):
 class MyTrainer:
     def __init__(self, model, l: float = 0.003, l1: bool = False):
         self.model = model
-        self.loss_fn = nn.MSELoss()
-        # self.loss_fn = MyLoss(0.001, True)
+        self.loss_fn = nn.CrossEntropyLoss()
         self.optimizer = torch.optim.SGD(self.model.parameters(), lr=learning_rate)
         self.writer = SummaryWriter()
         self.l1 = l1
@@ -68,9 +69,10 @@ class MyTrainer:
     def eval(self, eval_loader, epoch):
         model.eval()
         losses = []
-        rmse = []
+        y_preds = []
+        y_trues = []
         with torch.no_grad():
-            for batch, (b_x, b_y) in enumerate(eval_loader):
+            for b_x, b_y in eval_loader:
                 b_x, b_y = b_x.cuda(), b_y.cuda()
                 y_pred = self.model(b_x).squeeze(dim=-1)
                 loss = self.loss_fn(y_pred, b_y)
@@ -82,35 +84,44 @@ class MyTrainer:
                     loss = loss + self.l * parameters_to_vector(
                         self.model.parameters()
                     ).norm(2)
-                rmse.append(mean_squared_error(b_y.cpu(), y_pred.cpu(), squared=False))
+                y_preds.extend((torch.sigmoid(y_pred) > 0.5).cpu())
+                y_trues.extend(b_y.cpu())
 
                 losses.append(loss.item())
         losses = np.mean(losses)
+        acc = accuracy_score(y_trues, y_preds)
         self.writer.add_scalar("loss/val", losses, epoch)
-        self.writer.add_scalar("rmse/val", losses, epoch)
-        rmse = np.mean(rmse)
+        self.writer.add_scalar("acc/val", acc, epoch)
 
     def flush(self):
         self.writer.flush()
 
 
 if __name__ == "__main__":
-    epochs = 30
-    batch_size = 32
-    learning_rate = 0.003
-    l = 0.5
+    epochs = 40
+    batch_size = 128
+    learning_rate = 0.00003
+    l = 0.001
     device = "cuda" if torch.cuda.is_available() else "cpu"
     print(f"Using {device} device")
 
-    data = load_diabetes()
-    x = data["data"]
-    y = data["target"]
+    # https://www.kaggle.com/competitions/bnp-paribas-cardif-claims-management/data
+    train_df = pd.read_csv("data/paribas_train.csv")
+    train_df = train_df.sample(10000)
+    y = train_df.pop("target").values
+    train_df = train_df.select_dtypes([np.number])
+    train_df = train_df.fillna(value=0)
+    x = pd.get_dummies(train_df).values
     X_train, X_test, y_train, y_test = train_test_split(
         x, y, test_size=0.2, shuffle=True, random_state=42
     )
 
-    def toFloat32(x):
-        return x.to(torch.float)
+    scaler1 = StandardScaler()
+    scaler2 = StandardScaler()
+    X_train = scaler1.fit_transform(X_train)
+    X_test = scaler1.transform(X_test)
+    # y_train = scaler2.fit_transform(y_train.reshape(-1, 1)).reshape(-1)
+    # y_test = scaler2.transform(y_test.reshape(-1, 1)).reshape(-1)
 
     train_dataset = MyDataset(X_train, y_train)
     test_dataset = MyDataset(X_test, y_test)
@@ -123,9 +134,6 @@ if __name__ == "__main__":
     model = MyNN(x.shape[1]).to(device)
 
     trainer = MyTrainer(model, l, True)
-    import pdb
-
-    # pdb.set_trace()
 
     for epoch in tqdm.tqdm(range(epochs)):
         trainer.fit(train_dataloader, epoch)
@@ -138,6 +146,9 @@ if __name__ == "__main__":
         print(name, param)
     print("Norm l1: ", parameters_to_vector(model.parameters()).norm(1))
     print("Norm l2: ", parameters_to_vector(model.parameters()).norm(2))
+
+    v = parameters_to_vector(model.parameters())
+    print(f"{v[v.abs() < 1e-5].size()} would be removed")
 
     model = MyNN(x.shape[1]).to(device)
 
@@ -154,3 +165,6 @@ if __name__ == "__main__":
         print(name, param)
     print("Norm l1: ", parameters_to_vector(model.parameters()).norm(1))
     print("Norm l2: ", parameters_to_vector(model.parameters()).norm(2))
+
+    v = parameters_to_vector(model.parameters())
+    print(f"{v[v.abs() < 1e-5].size()} would be removed")
